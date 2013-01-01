@@ -1,0 +1,102 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+from __future__ import print_function
+
+import logging
+import traceback
+import signal
+
+from commands import getstatusoutput as gso
+from datetime import datetime, timedelta
+
+import gevent
+
+from gevent import Greenlet, sleep
+
+def serial_terminal():
+    status, dmesg_out = gso("dmesg")
+    if status != 0:
+        raise Exception('dmesg returned ' + status)
+
+    tty_lines = [line for line in dmesg_out.split('\n')
+                 if 'FTDI USB Serial' in line]
+
+    if len(tty_lines) == 0:
+        raise Exception('No lines for FTDi USB Serial found in dmesg!')
+
+    return sorted([line.split(' ')[-1] for line in tty_lines if 'tty' in line])[-1]
+
+def initialize_sensors(term):
+    status, output = gso("digitemp_DS9097U -s /dev/%s -i" % term)
+    if status != 0:
+        print(output)
+        raise Exception("digitemp initialization returned %i" % status)
+
+    sensors = [line.split(' ')[0] for line in output.split('\n')
+               if 'Temperature Sensor' in line]
+
+    return sensors
+
+def temperatures(term):
+    status, output = gso("digitemp_DS9097U -s /dev/%s -a -o\"%%s %%C\" -q" % term)
+    if status != 0:
+        print(output)
+        raise Exception("digitemp temperature fetching returned %i" % status)
+
+    return [line.split(' ')[1] for line in output.split('\n')]
+
+def send_report(host, sensor, temperature):
+    status, output = gso("bin/report_temperature --host %s --sensor-name %s --sensor-value %s" %
+                         (host, sensor, temperature))
+    if status != 0:
+        print(output)
+        raise Exception("reporting returned %i" % status)
+
+
+class Reporter(Greenlet):
+    def __init__(self, host, interval):
+        Greenlet.__init__(self)
+        self.host = host
+        self.interval = interval
+        self.logger = logging.getLogger('reporter.Reporter')
+
+    def _run(self):
+        report = datetime.now()
+        next_report = report + timedelta(seconds=self.interval)
+        self.logger.info("Starting reporter, interval %i seconds" % self.interval)
+        while True:
+            while datetime.now() < report:
+                sleep(1)
+            report = next_report
+
+            term = serial_terminal()
+            sensors = initialize_sensors(term)
+            temps = temperatures(term)
+
+            for sensor, temperature in zip(sensors, temps):
+                # print(sensor, temperature)
+                send_report(self.host, sensor, temperature)
+
+
+def main():
+    from optparse import OptionParser
+    parser = OptionParser()
+    parser.add_option("-d", "--debug", action="store_true", dest="debug", default=False,
+                      help="logging level DEBUG")
+    parser.add_option("--host", dest="host")
+    parser.add_option("--interval", dest="interval", type="int", default=10)
+    opts, args = parser.parse_args()
+
+    if opts.debug:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+    g = Reporter(opts.host, opts.interval)
+    gevent.signal(signal.SIGTERM, g.kill)
+    gevent.signal(signal.SIGINT, g.kill)
+    g.run()
+
+
+if __name__ == '__main__':
+    main()
