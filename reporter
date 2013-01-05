@@ -64,12 +64,9 @@ class Reporter(Greenlet):
         report = datetime.now()
         next_report = report + timedelta(seconds=self.interval)
         self.logger.info("Starting reporter, interval %i seconds" % self.interval)
+
         while True:
             try:
-                while datetime.now() < report:
-                    sleep(1)
-                report = next_report
-
                 term = serial_terminal()
                 sensors = initialize_sensors(term)
                 temps = temperatures(term)
@@ -77,6 +74,12 @@ class Reporter(Greenlet):
                 for sensor, temperature in zip(sensors, temps):
                     # print(sensor, temperature)
                     send_report(self.host, sensor, temperature)
+
+                while datetime.now() < next_report:
+                    sleep(0.5)
+
+                report = next_report
+                next_report = report + timedelta(seconds=self.interval)
             except Exception, e:
                 self.logger.error(traceback.format_exc())
                 self.logger.error("Encountered exception %s" % repr(e))
