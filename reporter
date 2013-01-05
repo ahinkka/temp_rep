@@ -49,8 +49,8 @@ def send_report(host, sensor, temperature):
     status, output = gso("bin/report_temperature --host %s --sensor-name %s --sensor-value %s" %
                          (host, sensor, temperature))
     if status != 0:
-        print(output)
-        raise Exception("reporting returned %i" % status)
+        raise Exception("reporting returned %i, output:\n%s\n" % (status, output))
+    logging.getLogger('reporter.send_report').info('Reported %s' % repr((sensor, temperature)))
 
 
 class Reporter(Greenlet):
@@ -65,17 +65,21 @@ class Reporter(Greenlet):
         next_report = report + timedelta(seconds=self.interval)
         self.logger.info("Starting reporter, interval %i seconds" % self.interval)
         while True:
-            while datetime.now() < report:
-                sleep(1)
-            report = next_report
+            try:
+                while datetime.now() < report:
+                    sleep(1)
+                report = next_report
 
-            term = serial_terminal()
-            sensors = initialize_sensors(term)
-            temps = temperatures(term)
+                term = serial_terminal()
+                sensors = initialize_sensors(term)
+                temps = temperatures(term)
 
-            for sensor, temperature in zip(sensors, temps):
-                # print(sensor, temperature)
-                send_report(self.host, sensor, temperature)
+                for sensor, temperature in zip(sensors, temps):
+                    # print(sensor, temperature)
+                    send_report(self.host, sensor, temperature)
+            except Exception, e:
+                self.logger.error(traceback.format_exc())
+                self.logger.error("Encountered exception %s" % repr(e))
 
 
 def main():
@@ -84,7 +88,7 @@ def main():
     parser.add_option("-d", "--debug", action="store_true", dest="debug", default=False,
                       help="logging level DEBUG")
     parser.add_option("--host", dest="host")
-    parser.add_option("--interval", dest="interval", type="int", default=10)
+    parser.add_option("--interval", dest="interval", type="int", default=60)
     opts, args = parser.parse_args()
 
     if opts.debug:
